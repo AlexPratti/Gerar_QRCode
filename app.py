@@ -2,48 +2,62 @@ import streamlit as st
 import segno
 from io import BytesIO
 
-st.set_page_config(page_title="Gerador QR Oficial", page_icon="🎯")
+# Configuração da página
+st.set_page_config(page_title="Gerador QR Turbo", page_icon="⚡")
 
-st.title("🎯 Gerador de QR Code: Link Direto")
-st.write("Esta versão foi otimizada para o seu Redmi Note 11 reconhecer o link do jogo.")
+# Inicializa o estado do campo de URL se não existir
+if 'url_input' not in st.session_state:
+    st.session_state.url_input = ""
 
-# Entrada de link
-url_input = st.text_input("Cole o link do seu jogo aqui:", value="https://jogoforca-5thk4gttejzpjv5sugpyql.streamlit.app/").strip()
+# Função para limpar o campo
+def limpar_campo():
+    st.session_state.url_input = ""
 
-if url_input:
-    # 1. TRATAMENTO DE URL
-    # Garantimos o protocolo correto
-    if not url_input.startswith(("http://", "https://")):
-        url_final = f"https://{url_input}"
-    else:
-        url_final = url_input
+st.title("🎯 Gerador de QR Code")
+st.write("Insira o link abaixo. O sistema gerará o código de alta fidelidade.")
+
+# Campo de entrada vinculado ao session_state
+url = st.text_input("Cole a URL aqui:", key="url_input")
+
+col1, col2 = st.columns([1, 5])
+
+with col1:
+    btn_gerar = st.button("Gerar QR")
+
+with col2:
+    if st.button("Limpar Tudo", on_click=limpar_campo):
+        st.rerun()
+
+if btn_gerar and url:
+    # 1. Tratamento da URL
+    url_final = url.strip()
+    if not url_final.startswith(("http://", "https://")):
+        url_final = f"https://{url_final}"
 
     try:
-        # 2. GERAÇÃO DE BAIXA DENSIDADE (MÁXIMO CONTRASTE)
-        # Como o link é longo, forçamos o nível de erro 'L' (mínimo)
-        # Isso faz o QR Code ter menos pontos, facilitando a leitura no Redmi
-        qr = segno.make_qr(url_final, error='l', boost_error=False)
+        # 2. Geração do QR Code (Baixa densidade para melhor leitura)
+        qr = segno.make_qr(url_final, error='l')
         
         buf = BytesIO()
-        # Scale 25 e Border 10 criam o maior contraste possível para o sensor Xiaomi
-        qr.save(buf, kind='png', scale=25, border=10, dark='black', light='white')
+        # Scale 20 e Border 10 para facilitar o foco no Redmi
+        qr.save(buf, kind='png', scale=20, border=10)
         byte_im = buf.getvalue()
 
-        # EXIBIÇÃO
-        st.success(f"Link configurado para o QR Code: {url_final}")
-        
-        # Mostramos o QR Code centralizado e bem nítido
-        st.image(byte_im, caption="APONTE A CÂMERA E CLIQUE NO ÍCONE DE GLOBO/LINK NO CANTO", width=500)
+        # 3. Exibição e Download
+        st.success(f"Link processado: {url_final}")
+        st.image(byte_im, caption="QR Code Gerado", width=400)
 
         st.download_button(
-            label="📥 Baixar QR Code de Alta Compatibilidade",
+            label="📥 Baixar Imagem (PNG)",
             data=byte_im,
-            file_name="qrcode_jogo_direto.png",
+            file_name="qrcode_gerado.png",
             mime="image/png"
         )
+        
+        st.info("💡 Para gerar um novo, clique em 'Limpar Tudo' acima.")
 
     except Exception as e:
-        st.error(f"Erro ao gerar: Verifique se o link está correto.")
+        st.error("Erro ao gerar o código. Verifique o link inserido.")
 
-st.divider()
-st.info("💡 **DICA FINAL:** Se o seu Redmi ainda der 'Copiar Texto', afaste o celular da tela. O link longo gera muitos pontos; a câmera precisa de distância para focar em todos de uma vez e mostrar o botão 'Ir para o site'.")
+elif btn_gerar and not url:
+    st.warning("Por favor, insira uma URL antes de gerar.")
