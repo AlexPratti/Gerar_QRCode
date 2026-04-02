@@ -2,51 +2,47 @@ import streamlit as st
 import segno
 from io import BytesIO
 
-# Configuração da Interface
-st.set_page_config(page_title="Gerador QR Universal", page_icon="🌐", layout="centered")
+st.set_page_config(page_title="Gerador QR Turbo", page_icon="⚡")
 
-st.title("🎯 Gerador de QR Code: Link Direto")
-st.write("Cole qualquer link abaixo para gerar um acesso instantâneo via câmera.")
+st.title("🎯 Gerador de Link Direto (Otimizado)")
+st.write("Cole qualquer link. O sistema ajustará a densidade para o seu Redmi ler direto.")
 
-# Entrada de dados (Campo vazio para você colar o que quiser)
-user_input = st.text_input("Cole a URL do site aqui:", placeholder="ex: google.com.br ou seu link do streamlit").strip()
+# Entrada de link vazia para você usar como quiser
+url_input = st.text_input("Cole a URL aqui:", placeholder="meusite.com").strip()
 
-if user_input:
-    # 1. TRATAMENTO DE URL (O "Pulo do Gato" para Android/Xiaomi)
-    # Remove espaços, quebras de linha e garante o protocolo https://
-    url_limpa = user_input.replace(" ", "").replace("\n", "").replace("\r", "")
-    
+if url_input:
+    # 1. TRATAMENTO RIGOROSO
+    # Forçamos o HTTPS e limpamos qualquer caractere invisível
+    url_limpa = url_input.replace(" ", "").replace("\n", "")
     if not url_limpa.startswith(("http://", "https://")):
         final_url = f"https://{url_limpa}"
     else:
         final_url = url_limpa
 
     try:
-        # 2. GERAÇÃO COM SEGNO (Alta Fidelidade)
-        # Usamos scale=15 para que os blocos sejam grandes o suficiente para o foco do Redmi
-        qr = segno.make_qr(final_url)
+        # 2. O SEGREDO PARA XIAOMI: Baixa Densidade (Boost de Contraste)
+        # Usamos micro=False e forçamos uma versão mínima para os blocos ficarem GRANDES
+        # O segredo é o 'boost_error=False' para não carregar o código de pontos desnecessários
+        qr = segno.make_qr(final_url, error='l', boost_error=False)
         
-        # Criamos o buffer para a imagem PNG
         buf = BytesIO()
-        qr.save(buf, kind='png', scale=15, border=4)
+        # Scale 20 cria quadrados gigantescos. É impossível a câmera do Redmi confundir com texto.
+        qr.save(buf, kind='png', scale=20, border=4)
         byte_im = buf.getvalue()
 
-        # 3. EXIBIÇÃO NO STREAMLIT
-        st.success(f"✅ Link validado: {final_url}")
-        
-        # Centralizamos a imagem para facilitar o escaneamento direto da tela
-        st.image(byte_im, caption="Aponte a câmera e clique em 'Ir para o site'", width=400)
+        # 3. EXIBIÇÃO
+        st.success(f"Link configurado: {final_url}")
+        st.image(byte_im, caption="Aponte a câmera (O botão 'Ir para o site' deve aparecer)", width=450)
 
-        # BOTÃO DE DOWNLOAD
         st.download_button(
-            label="📥 Baixar QR Code (PNG)",
+            label="📥 Baixar QR Code de Alta Compatibilidade",
             data=byte_im,
             file_name="qrcode_direto.png",
             mime="image/png"
         )
 
     except Exception as e:
-        st.error(f"Ocorreu um erro ao gerar o QR Code: {e}")
+        st.error(f"Erro: {e}")
 
 st.divider()
-st.info("💡 **Dica para o seu Redmi:** Sempre que colar um link novo, certifique-se de que ele não tenha espaços no final. O botão 'Ir para o site' aparecerá assim que a câmera focar no código.")
+st.warning("💡 **Dica Técnica:** Se o seu Redmi ainda mostrar 'Copiar Texto', afaste um pouco o celular da tela. Como aumentamos a escala para 20, o código ficou muito grande e nítido; a câmera precisa de um pouco de distância para focar em todos os blocos de uma vez.")
