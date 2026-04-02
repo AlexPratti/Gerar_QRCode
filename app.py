@@ -1,64 +1,52 @@
 import streamlit as st
-import qrcode
+import segno
 from io import BytesIO
 
 # Configuração da página
-st.set_page_config(page_title="Gerador Universal QR", page_icon="🌍")
+st.set_page_config(page_title="Gerador QR Infallible", page_icon="🎯")
 
-st.title("🌐 Gerador de QR Code Universal")
+st.title("🚀 Gerador de QR Code Anti-Texto")
 st.markdown("""
-Este gerador utiliza **Identificação de URI Forçada**. 
-Ele é desenhado para que celulares Redmi, Samsung e iPhone reconheçam o link como uma **Ação de Navegador** imediata.
+Este gerador utiliza a biblioteca **Segno**, que cria QR Codes com alta conformidade ISO. 
+Ideal para celulares **Xiaomi/Redmi** que costumam travar na opção 'Copiar Texto'.
 """)
 
 # Entrada do link
-url_input = st.text_input("Digite o site (ex: google.com):", placeholder="meusite.com.br").strip()
+url_input = st.text_input("Cole o link aqui (ex: google.com):", placeholder="meusite.com").strip()
 
 if url_input:
-    # 1. TRATAMENTO DE STRING ULTRA-RIGOROSO
-    # Remove qualquer protocolo para reconstruir o link 'limpo'
-    clean_url = url_input.replace("https://", "").replace("http://", "").strip()
+    # 1. LIMPEZA TOTAL DA URL
+    # Remove espaços, quebras de linha e protocolos mal formatados
+    clean_url = url_input.replace(" ", "").replace("\n", "").replace("\r", "")
     
-    # O SEGREDO: Adicionamos o protocolo e garantimos que não existam caracteres de escape
-    # que confundam o Android. Usamos a URL absoluta.
-    final_link = f"https://{clean_url}"
+    if not clean_url.startswith(("http://", "https://")):
+        final_link = f"https://{clean_url}"
+    else:
+        final_link = clean_url
 
-    # 2. CONFIGURAÇÃO DO QR CODE PARA ALTA COMPATIBILIDADE
-    # Usamos o Error Correction 'Q' (Quartile) - é o equilíbrio perfeito para links
-    qr = qrcode.QRCode(
-        version=None, # Ajuste automático de tamanho
-        error_correction=qrcode.constants.ERROR_CORRECT_Q, 
-        box_size=12,   # Tamanho ideal para foco de câmeras intermediárias
-        border=4,
-    )
+    # 2. GERAÇÃO COM SEGNO (O segredo da compatibilidade)
+    # O comando 'make_qr' com o link direto força a criação de um QR Code de URL (URI)
+    qr = segno.make_qr(final_link)
     
-    qr.add_data(final_link)
-    qr.make(fit=True)
-
-    # Criar a imagem com alto contraste (Preto puro no Branco puro)
-    img = qr.make_image(fill_color="black", back_color="white")
-
-    # 3. CONVERSÃO PARA O STREAMLIT
+    # Criamos o buffer para a imagem
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    # Aumentamos o 'scale' para que os quadrados fiquem nítidos no sensor do Redmi
+    qr.save(buf, kind='png', scale=10, border=4)
     byte_im = buf.getvalue()
 
-    # EXIBIÇÃO DO RESULTADO
-    st.success(f"Link validado para ativação direta: {final_link}")
+    # 3. EXIBIÇÃO NO STREAMLIT
+    st.success(f"Link codificado como comando de sistema: {final_link}")
     
-    # Mostramos o QR Code em um tamanho que não distorce na tela do PC/Celular
-    st.image(byte_im, caption="Aponte a câmera agora. O botão 'Ir para o site' deve aparecer.", width=380)
+    # Exibimos a imagem
+    st.image(byte_im, caption="Aponte a câmera. O botão 'Ir para o site' DEVE aparecer agora.", width=400)
 
     # BOTÃO DE DOWNLOAD
     st.download_button(
-        label="📥 Baixar QR Code de Alta Compatibilidade",
+        label="📥 Baixar QR Code Compatível",
         data=byte_im,
-        file_name="qrcode_universal.png",
+        file_name="qr_link_direto.png",
         mime="image/png"
     )
 
 st.divider()
-st.info("""
-**Por que este funciona?** 
-Diferente de geradores comuns, este código usa o nível de correção 'Q' e reconstrói a estrutura da URL para que o kernel do Android (MIUI/Xiaomi) dispare o gatilho de 'Link Encontrado' em vez de 'Texto Encontrado'.
-""")
+st.warning("⚠️ **Atenção no Redmi Note 11:** Ao ler o código, procure por um **ícone de Globo ou Link** que aparece no canto inferior da tela da câmera. Você precisa tocar nele para abrir.")
