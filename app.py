@@ -36,14 +36,17 @@ def process_pdf_as_images(file):
                     current_n1 = texto_limpo.upper()
                     continue
 
+                # Identifica Hino (Ex: 3. HINO)
                 if re.match(r'^\d+\.', texto_limpo):
                     if current_n2:
+                        # O fim do hino anterior é exatamente onde este começa
                         data.append({
                             "n1": current_n1, 
                             "n2": current_n2, 
                             "pag_inicio": start_page, 
                             "pag_fim": i + 1 
                         })
+                    
                     current_n2 = texto_limpo
                     start_page = i + 1
             
@@ -61,10 +64,8 @@ def save_to_db(data):
     
     for cat_nome in CATEGORIAS_ALVO:
         res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat_nome}).execute()
-        
-        if res.data:
-            # Pega o ID como inteiro puro
-            cat_id = res.data[0]['id']
+        if res.data and len(res.data) > 0:
+            cat_id = res.data[0]['id'] # Ajuste para pegar ID da lista
             
             itens = [
                 {
@@ -95,27 +96,32 @@ try:
         c1, c2 = st.columns(2)
         
         with c1:
-            escolha_n1 = st.selectbox("Categoria", df_cat['nome_nivel1'])
-            # CORREÇÃO: .iloc[0] transforma a Series do Pandas em um valor único (int)
+            escolha_n1 = st.selectbox("Categoria", df_cat['nome_nivel1'], key="cat_select")
             id_n1 = int(df_cat[df_cat['nome_nivel1'] == escolha_n1]['id'].iloc[0])
         
+        # Busca hinos e usa uma chave (key) dinâmica para resetar o radio/selectbox
         hinos = supabase.table("hinos_conteudos").select("*").eq("categoria_id", id_n1).execute().data
 
         if hinos:
-            hino_sel = st.selectbox("Hino:", [h['nome_nivel2'] for h in hinos])
-            dados_hino = next(h for h in hinos if h['nome_nivel2'] == hino_sel)
+            # Ordenar hinos numericamente para não misturar
+            hinos_ordenados = sorted(hinos, key=lambda x: int(re.search(r'\d+', x['nome_nivel2']).group()))
+            titulos = [h['nome_nivel2'] for h in hinos_ordenados]
             
-            # Recupera o intervalo de páginas
+            # Usamos o nome da categoria na key para forçar o Streamlit a limpar a seleção anterior
+            hino_sel = st.selectbox("Escolha o Hino:", titulos, key=f"hino_{escolha_n1}")
+            
+            dados_hino = next(h for h in hinos if h['nome_nivel2'] == hino_sel)
             pag_str = dados_hino['texto_completo'].split('-')
             p_ini, p_fim = int(pag_str[0]), int(pag_str[1])
             
             st.divider()
             with pdfplumber.open(arquivo) as pdf:
+                # Se o hino começa e termina na mesma página, mostra só uma
+                # Se for hino longo, mostra as páginas necessárias
                 for p_num in range(p_ini, p_fim + 1):
-                    # Foto da página com boa resolução (200 dpi)
                     img = pdf.pages[p_num - 1].to_image(resolution=200).original
                     st.image(img, use_container_width=True)
     else:
         st.info("Aguardando PDF...")
 except Exception as e:
-    st.error(f"Erro: {e}")
+    st.error(f"Selecione uma categoria válida para carregar os hinos.")
