@@ -23,7 +23,7 @@ def process_pdf(file):
     with pdfplumber.open(file) as pdf:
         progresso = st.progress(0)
         for i, page in enumerate(pdf.pages):
-            # Layout=True preserva a posição das cifras acima das letras
+            # layout=True é vital para manter cifras sobre as letras
             text = page.extract_text(layout=True)
             if not text: continue
             
@@ -32,7 +32,7 @@ def process_pdf(file):
                 texto_limpo = linha.strip()
                 if not texto_limpo or "Sumário" in texto_limpo: continue
 
-                # Nível 1
+                # Nível 1 - Categorias
                 if texto_limpo.upper() in CATEGORIAS_ALVO:
                     if current_n2:
                         data.append({"n1": current_n1, "n2": current_n2, "texto": "\n".join(current_text)})
@@ -42,7 +42,7 @@ def process_pdf(file):
                     data.append({"n1": current_n1, "n2": None, "texto": ""})
                     continue
 
-                # Nível 2
+                # Nível 2 - Títulos dos Hinos (Começa com número)
                 if re.match(r'^\d+\.', texto_limpo):
                     if current_n2:
                         data.append({"n1": current_n1, "n2": current_n2, "texto": "\n".join(current_text)})
@@ -51,7 +51,7 @@ def process_pdf(file):
                     
                 elif current_n2:
                     if not texto_limpo.isdigit():
-                        # Mantém a linha bruta (com espaços) para alinhar as cifras
+                        # Guardamos a 'linha' integral para preservar espaços das cifras
                         current_text.append(linha)
 
             progresso.progress((i + 1) / len(pdf.pages))
@@ -60,6 +60,7 @@ def process_pdf(file):
         data.append({"n1": current_n1, "n2": current_n2, "texto": "\n".join(current_text)})
     return data
 def save_to_db(data):
+    # Limpeza total para evitar duplicatas
     supabase.table("hinos_conteudos").delete().neq("id", 0).execute()
     supabase.table("hinos_categorias").delete().neq("id", 0).execute()
     
@@ -67,7 +68,7 @@ def save_to_db(data):
     for cat_nome in categorias_encontradas:
         res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat_nome}).execute()
         
-        # CORREÇÃO DO ERRO: res.data é uma lista, pegamos o primeiro item [0]
+        # Correção no acesso ao ID do Supabase
         if res.data:
             cat_id = res.data[0]['id']
             
@@ -89,6 +90,7 @@ with st.expander("⬆️ Upload PDF"):
         st.success("Banco atualizado!")
         st.rerun()
 
+# --- EXIBIÇÃO ---
 try:
     res_cat = supabase.table("hinos_categorias").select("*").order("nome_nivel1").execute()
     if res_cat.data:
@@ -96,20 +98,28 @@ try:
         c1, c2 = st.columns(2)
         with c1:
             escolha_n1 = st.selectbox("Categoria", df_cat['nome_nivel1'])
-            id_n1 = int(df_cat[df_cat['nome_nivel1'] == escolha_n1]['id'])
+            # Filtro robusto para pegar o ID da categoria selecionada
+            id_n1 = int(df_cat[df_cat['nome_nivel1'] == escolha_n1]['id'].values[0])
         
-        hinos = supabase.table("hinos_conteudos").select("*").eq("categoria_id", id_n1).execute().data
+        # Busca hinos vinculados ao ID da categoria
+        res_hinos = supabase.table("hinos_conteudos").select("*").eq("categoria_id", id_n1).execute()
+        hinos = res_hinos.data
 
         if hinos:
             hino_sel = st.radio("Hino:", [h['nome_nivel2'] for h in hinos])
             conteudo = next(h for h in hinos if h['nome_nivel2'] == hino_sel)
             
             st.markdown("---")
-            # CSS estrito para manter cifras alinhadas
+            # CSS final para fonte monoespaçada e preservação de espaços/quebras
             st.markdown(f"""
-            <div style="background-color: #ffffff; padding: 20px; border: 1px solid #ddd; border-radius: 8px; overflow-x: auto;">
-                <pre style="font-family: 'Courier New', Courier, monospace; font-size: 15px; white-space: pre; color: #1e1e1e;">{conteudo['texto_completo']}</pre>
+            <div style="background-color: white; padding: 20px; border: 1px solid #ddd; border-radius: 8px; overflow-x: auto;">
+                <pre style="font-family: 'Courier New', Courier, monospace; font-size: 16px; white-space: pre; color: #1e1e1e; line-height: 1.2;">{conteudo['texto_completo']}</pre>
             </div>
             """, unsafe_allow_html=True)
+        else:
+            st.warning("Nenhum hino nesta categoria.")
+    else:
+        st.info("Aguardando upload do primeiro arquivo...")
 except Exception as e:
-    st.info("Aguardando dados...")
+    # Mostra o erro real se algo falhar
+    st.error(f"Erro ao carregar dados: {e}")
