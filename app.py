@@ -2,133 +2,93 @@ import streamlit as st
 from docx import Document
 from supabase import create_client
 import pandas as pd
-import re
 
-# Conexão segura com Supabase
-supabase = create_client(st.secrets["URL_SUPABASE"], st.secrets["KEY_SUPABASE"])
+# Conexão com os nomes que você definiu no Secrets
+url = st.secrets["URL_SUPABASE"]
+key = st.secrets["KEY_SUPABASE"]
+supabase = create_client(url, key)
 
 def process_docx(file):
     doc = Document(file)
-    paragraphs = []
-    # Captura parágrafos de forma simples para evitar erro de sintaxe
-    for p in doc.paragraphs:
-        txt = p.text.strip()
-        if txt:
-            paragraphs.append(txt)
-    
     data = []
-    hinos_mapeados = []
-    current_cat = "GERAL"
-    
-    # 1. VARREDURA DO SUMÁRIO (Baseado no seu PDF)
-    for text in paragraphs:
-        # Identifica linhas do sumário pelos pontinhos guia
-        if "...." in text:
-            # Limpa o texto: remove os pontos e o número da página no fim
-            clean_text = re.sub(r'\.+\s*\d+$', '', text).strip()
-            
-            # REGRA NÍVEL 1: Tudo em CAIXA ALTA e não começa com número
-            if clean_text.isupper() and not clean_text[0:1].isdigit():
-                current_cat = clean_text
-            
-            # REGRA NÍVEL 2: Começa com número
-            elif clean_text[0:1].isdigit():
-                hinos_mapeados.append({"cat": current_cat, "titulo": clean_text})
-        
-        # Para de ler o sumário quando encontra o conteúdo real (página 10)
-        if text == "ORANTES" and "...." not in text:
-            break
-
-    # 2. CAPTURA DO CONTEÚDO (Corpo do Texto)
-    # Criamos um mapa para armazenar as letras de cada título achado no sumário
-    conteudos = {}
-    for h in hinos_mapeados:
-        conteudos[h['titulo']] = []
-        
-    hino_foco = None
-
-    for text in paragraphs:
-        # Se a linha for exatamente um dos títulos do sumário, muda o foco
-        if text in conteudos:
-            hino_foco = text
-        elif hino_foco:
-            # Se não for outro título, é a letra do hino atual
-            if text not in conteudos:
-                conteudos[hino_foco].append(text)
-    
-    # 3. MONTAGEM DO DICIONÁRIO FINAL
-    for h in hinos_mapeados:
-        data.append({
-            "n1": h['cat'],
-            "n2": h['titulo'],
-            "texto": "\n".join(conteudos[h['titulo']])
-        })
+    current_n1 = None
+    for para in doc.paragraphs:
+        style = para.style.name
+        # Identifica Títulos 1 e 2 (ajuste conforme o idioma do seu Word)
+        if 'Heading 1' in style or 'Título 1' in style:
+            current_n1 = para.text.strip()
+        elif ('Heading 2' in style or 'Título 2' in style) and current_n1:
+            data.append({"n1": current_n1, "n2": para.text.strip()})
     return data
 
 def save_to_db(data):
-    # Limpa dados para sobreposição
+    # Limpa as tabelas existentes (Sobrepõe o arquivo)
+    # Importante: a ordem de delete evita erro de chave estrangeira
     supabase.table("hinos_conteudos").delete().neq("id", 0).execute()
     supabase.table("hinos_categorias").delete().neq("id", 0).execute()
     
-    seen_cats = {}
-    for item in data:
-        cat_name = item['n1']
-        if cat_name not in seen_cats:
-            res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat_name}).execute()
-            if res.data:
-                # No Supabase Python, res.data é uma lista. Pegamos o ID do primeiro item.
-                seen_cats[cat_name] = res.data[0]['id']
+    categorias_unicas = sorted(list(set([item['n1'] for item in data])))
+    for cat in categorias_unicas:
+        res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat}).execute()
+        cat_id = res.data[0]['id']
         
-        if cat_name in seen_cats:
-            supabase.table("hinos_conteudos").insert({
-                "categoria_id": seen_cats[cat_name],
-                "nome_nivel2": item['n2'],
-                "texto_completo": item['texto']
-            }).execute()
+        itens = [
+            {"categoria_id": cat_id, "nome_nivel2": item['n2']} 
+            for item in data if item['n1'] == cat
+        ]
+        if itens:
+            supabase.table("hinos_conteudos").insert(itens).execute()
 
-# --- INTERFACE ---
-st.set_page_config(page_title="Hinário Litúrgico", layout="wide")
+# --- Interface ---
+st.set_page_config(page_title="Hinos Litúrgicos", layout="wide")
+st.title("📖 Hinário Litúrgico")
 
-with st.sidebar:
-    st.title("⚙️ Painel Admin")
-    arquivo = st.file_uploader("Suba o arquivo .docx", type="docx")
-    if st.button("🚀 Processar Hinário"):
+# Área de Upload (oculta por padrão para não ocupar tela)
+with st.expander("⬆️ Upload de novo arquivo (.docx)"):
+    arquivo = st.file_uploader("Isso substituirá todos os hinos atuais", type="docx")
+    if st.button("Confirmar Processamento"):
         if arquivo:
-            with st.spinner("Lendo sumário e hinos..."):
+            with st.spinner("Processando..."):
                 dados = process_docx(arquivo)
                 save_to_db(dados)
-                st.success(f"{len(dados)} hinos salvos com sucesso!")
+                st.success("Banco de dados atualizado com sucesso!")
                 st.rerun()
 
-# --- EXIBIÇÃO ---
+# Carregamento de Dados
 try:
-    res_cat = supabase.table("hinos_categorias").select("*").order("id").execute()
+    res_cat = supabase.table("hinos_categorias").select("id, nome_nivel1").order("nome_nivel1").execute()
+    
     if res_cat.data:
         df_cat = pd.DataFrame(res_cat.data)
-        col1, col2 = st.columns([1, 2])
         
+        col1, col2 = st.columns([1, 1])
         with col1:
-            sel_n1 = st.selectbox("📌 Selecione a Seção:", df_cat['nome_nivel1'])
-            cat_id = int(df_cat[df_cat['nome_nivel1'] == sel_n1]['id'].iloc[0])
-            
-            busca = st.text_input("🔍 Busca rápida (Nome/Número):")
-            
-            h_db = supabase.table("hinos_conteudos").select("*").eq("categoria_id", cat_id).order("id").execute().data
-            if h_db:
-                if busca:
-                    h_db = [h for h in h_db if busca.lower() in h['nome_nivel2'].lower()]
-                
-                nomes = [h['nome_nivel2'] for h in h_db]
-                if nomes:
-                    escolha = st.radio("📑 Lista de Hinos:", nomes)
-                    info = next(h for h in h_db if h['nome_nivel2'] == escolha)
-                    
-                    with col2:
-                        st.subheader(info['nome_nivel2'])
-                        st.divider()
-                        st.text(info['texto_completo'])
-    else:
-        st.info("💡 Banco vazio. Use o menu lateral para processar o hinário.")
-except Exception as e:
-    st.error(f"Erro no sistema: {e}")
+            cat_selecionada = st.selectbox("1. Selecione a Categoria:", df_cat['nome_nivel1'])
+            cat_id = int(df_cat[df_cat['nome_nivel1'] == cat_selecionada]['id'].iloc[0])
+        
+        with col2:
+            busca = st.text_input("2. 🔍 Filtrar Título (Nível 2):", placeholder="Digite uma palavra-chave...")
 
+        # Busca hinos vinculados à categoria
+        query = supabase.table("hinos_conteudos").select("nome_nivel2").eq("categoria_id", cat_id).order("nome_nivel2")
+        
+        if busca:
+            query = query.ilike("nome_nivel2", f"%{busca}%")
+        
+        res_hinos = query.execute()
+        
+        if res_hinos.data:
+            hinos_lista = [h['nome_nivel2'] for h in res_hinos.data]
+            st.markdown(f"### Lista de hinos em: **{cat_selecionada}**")
+            # Radio button para o usuário escolher o hino final
+            escolha_final = st.radio("Selecione para visualizar:", hinos_lista, label_visibility="collapsed")
+            
+            if escolha_final:
+                st.info(f"Você selecionou: **{escolha_final}**")
+        else:
+            st.warning("Nenhum título encontrado com este filtro.")
+    else:
+        st.info("O banco de dados está vazio. Por favor, suba um arquivo docx no menu acima.")
+
+except Exception as e:
+    st.error(f"Erro ao conectar ao banco: {e}")
