@@ -4,7 +4,7 @@ import re
 from supabase import create_client
 import pandas as pd
 
-# Conexão original
+# Conexão original mantida
 supabase = create_client(st.secrets["URL_SUPABASE"], st.secrets["KEY_SUPABASE"])
 
 CATEGORIAS_ALVO = [
@@ -15,7 +15,7 @@ CATEGORIAS_ALVO = [
 ]
 
 def process_pdf_with_coords(file):
-    data = []
+    hinos_detectados = []
     current_n1 = "Sem Categoria"
     
     with pdfplumber.open(file) as pdf:
@@ -23,42 +23,41 @@ def process_pdf_with_coords(file):
         total_pags = len(pdf.pages)
         
         for i, page in enumerate(pdf.pages):
-            # Extraímos as palavras com coordenadas exatas
             words = page.extract_words()
+            text_lines = page.extract_text().split('\n')
             
-            # Buscamos linhas que começam com "Número." (ex: 2., 3., 4.)
-            for obj in page.extract_text().split('\n'):
-                texto_linha = obj.strip()
-                
-                if texto_linha.upper() in CATEGORIAS_ALVO:
-                    current_n1 = texto_linha.upper()
+            for line in text_lines:
+                texto_limpo = line.strip()
+                if not texto_limpo: continue
+
+                if texto_limpo.upper() in CATEGORIAS_ALVO:
+                    current_n1 = texto_limpo.upper()
                     continue
 
-                if re.match(r'^\d+\.', texto_linha):
-                    # Localizamos o Y exato do título do hino
-                    # Pegamos a primeira palavra (o número) para marcar o topo
-                    num_titulo = texto_linha.split()[0]
+                # Identifica títulos (ex: "4. NOME DO HINO")
+                if re.match(r'^\d+\.', texto_limpo):
+                    # Localiza a posição Y (topo) do número do hino
+                    num_tit = texto_limpo.split()[0]
                     y_top = 0
                     for w in words:
-                        if w == num_titulo:
+                        if w == num_tit:
                             y_top = float(w['top'])
                             break
                     
                     # Se houver um hino anterior na mesma página, definimos que ele termina onde este começa
-                    if data and data[-1]['pag_fim'] == i + 1:
-                        data[-1]['y_fim'] = y_top - 5
+                    if hinos_detectados and hinos_detectados[-1]['pag'] == i + 1:
+                        hinos_detectados[-1]['y_fim'] = y_top - 10
 
-                    # Adicionamos o novo hino iniciando exatamente no y_top encontrado
-                    data.append({
+                    hinos_detectados.append({
                         "n1": current_n1,
-                        "n2": texto_linha,
-                        "pag_inicio": i + 1,
-                        "y_ini": y_top - 10 if y_top > 10 else 0, # Margem acima do título
-                        "pag_fim": i + 1,
-                        "y_fim": float(page.height) # Por enquanto vai até o fim da página
+                        "n2": texto_limpo,
+                        "pag": i + 1,
+                        "y_ini": y_top - 15 if y_top > 15 else 0, # Início exato no título
+                        "y_fim": float(page.height) # Fim padrão: final da página
                     })
             progresso.progress((i + 1) / total_pags)
-    return data
+            
+    return hinos_detectados
 def save_to_db(data):
     supabase.table("hinos_conteudos").delete().neq("id", 0).execute()
     supabase.table("hinos_categorias").delete().neq("id", 0).execute()
@@ -67,12 +66,12 @@ def save_to_db(data):
         res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat_nome}).execute()
         if res.data:
             cat_id = res.data[0]['id']
+            
             itens = [
                 {
                     "categoria_id": cat_id, 
                     "nome_nivel2": item['n2'],
-                    # Guardamos as 4 coordenadas para o recorte perfeito
-                    "texto_completo": f"{item['pag_inicio']};{item['y_ini']};{item['pag_fim']};{item['y_fim']}"
+                    "texto_completo": f"{item['pag']};{item['y_ini']};{item['y_fim']}"
                 } for item in data if item['n1'] == cat_nome
             ]
             if itens: supabase.table("hinos_conteudos").insert(itens).execute()
@@ -81,11 +80,11 @@ def save_to_db(data):
 st.set_page_config(page_title="Hinário Litúrgico", layout="wide")
 
 with st.expander("⬆️ Sincronizar Novo PDF"):
-    arquivo = st.file_uploader("Selecione o arquivo PDF", type="pdf")
+    arquivo = st.file_uploader("Arquivo PDF", type="pdf")
     if st.button("Atualizar Banco de Dados") and arquivo:
         dados = process_pdf_with_coords(arquivo)
         save_to_db(dados)
-        st.success("Banco de dados atualizado! Faça a busca agora.")
+        st.success("Sincronização concluída!")
         st.rerun()
 
 try:
@@ -94,29 +93,29 @@ try:
         df_cat = pd.DataFrame(res_cat.data)
         c1, c2 = st.columns(2)
         with c1:
-            escolha_n1 = st.selectbox("Categoria", df_cat['nome_nivel1'], key="c_select")
+            escolha_n1 = st.selectbox("Categoria", df_cat['nome_nivel1'], key="main_cat")
             id_n1 = int(df_cat[df_cat['nome_nivel1'] == escolha_n1]['id'].iloc[0])
         
         hinos = supabase.table("hinos_conteudos").select("*").eq("categoria_id", id_n1).execute().data
         if hinos:
-            # Ordenação numérica correta (1, 2, 3...)
             hinos_ord = sorted(hinos, key=lambda x: int(re.search(r'\d+', x['nome_nivel2']).group()))
             hino_sel = st.selectbox("Escolha o Hino:", [h['nome_nivel2'] for h in hinos_ord], key=f"sel_{escolha_n1}")
             
             item = next(h for h in hinos if h['nome_nivel2'] == hino_sel)
             c = item['texto_completo'].split(';')
-            p_ini, y_ini, p_fim, y_fim = int(c[0]), float(c[1]), int(c[2]), float(c[3])
+            pag, y_ini, y_fim = int(c[0]), float(c[1]), float(c[2])
 
             st.divider()
             with pdfplumber.open(arquivo) as pdf:
-                page = pdf.pages[p_ini - 1]
-                # Trava de segurança: y_fim deve ser maior que y_ini
+                page = pdf.pages[pag - 1]
+                
+                # RECORTE: Começa no y_ini (título) e vai até o y_fim (fim do hino ou da página)
+                # Isso remove os hinos anteriores que estavam no topo da página
                 if y_fim <= y_ini: y_fim = float(page.height)
                 
-                # Realiza o RECORTE (Crop): isola do y_ini até o y_fim
                 recorte = page.crop((0, y_ini, page.width, y_fim))
                 st.image(recorte.to_image(resolution=200).original, use_container_width=True)
     else:
         st.info("Aguardando upload e seleção.")
 except Exception as e:
-    st.error(f"Selecione uma categoria válida. Erro técnico: {e}")
+    st.error(f"Erro: {e}")
