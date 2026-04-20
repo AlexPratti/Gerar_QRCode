@@ -88,13 +88,25 @@ with st.expander("⬆️ Gerenciar e Upload de Arquivos"):
         lista_nomes = [f.name for f in arquivos_carregados]
         escolhido = st.selectbox("Escolha qual arquivo aplicar à opção selecionada no rádio:", lista_nomes)
         
-        if st.button(f"Sincronizar"):
+        if st.button("Sincronizar"):
             with st.spinner("Processando..."):
                 arq_obj = next(f for f in arquivos_carregados if f.name == escolhido)
                 file_bytes = arq_obj.read()
-                try: supabase.storage.from_(BUCKET).remove([NOME_STORAGE])
-                except: pass
-                supabase.storage.from_(BUCKET).upload(path=NOME_STORAGE, file=file_bytes)
+                
+                # Envia o arquivo forçando a sobrescrita (upsert)
+                # O parâmetro 'x-upsert' em letras minúsculas e string "true" resolve o erro de duplicata
+                try:
+                    supabase.storage.from_(BUCKET).upload(
+                        path=NOME_STORAGE, 
+                        file=file_bytes, 
+                        file_options={"upsert": "true"}
+                    )
+                except Exception:
+                    # Caso o upload falhe por já existir, tentamos o método update
+                    supabase.storage.from_(BUCKET).update(
+                        path=NOME_STORAGE, 
+                        file=file_bytes
+                    )
                 
                 dados = process_pdf_adaptativo(io.BytesIO(file_bytes), doc_ativo)
                 if dados:
@@ -103,6 +115,7 @@ with st.expander("⬆️ Gerenciar e Upload de Arquivos"):
                     st.rerun()
                 else:
                     st.error("Nenhum hino numerado encontrado.")
+
 
 try:
     res_cat = supabase.table("hinos_categorias").select("*").order("nome_nivel1").execute()
