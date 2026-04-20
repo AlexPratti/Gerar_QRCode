@@ -130,7 +130,7 @@ try:
                              title="Clique para abrir em tela cheia e dar zoom">
                     </div>
                     <p style="text-align: center; color: gray; font-size: 0.8rem;">
-                        Pressione o hino para ampliar ou use dois dedos para o zoom.
+                        Se estiver no celular pressione o hino e compartilhe para usar o zoom.
                     </p>
                     """, 
                     unsafe_allow_html=True
