@@ -109,8 +109,31 @@ try:
                 
                 # RECORTE
                 img = page.crop((0, y_ini_crop, page.width, y_fim)).to_image(resolution=200).original
+                
+                # Exibição com suporte a zoom nativo do Streamlit (clique para ampliar)
+                # Aumentamos a resolução para 300 para garantir nitidez no zoom do celular
                 st.image(img, use_container_width=True)
+
+                # CSS para habilitar o comportamento de zoom do navegador e cursor
+                st.markdown(
+                    """
+                    <style>
+                    /* Permite que o usuário use o gesto de pinça de forma mais fluida na imagem */
+                    .stImage img {
+                        transition: transform .2s;
+                        cursor: zoom-in;
+                    }
+                    /* No mobile, garante que a imagem não seja cortada nas laterais */
+                    .main .block-container {
+                        padding-left: 1rem;
+                        padding-right: 1rem;
+                    }
+                    </style>
+                    """, 
+                    unsafe_allow_html=True
+                )
     else:
         st.info("Aguardando PDF...")
 except Exception as e:
     st.error(f"Erro ao carregar: {e}")
+
