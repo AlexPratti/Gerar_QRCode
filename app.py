@@ -46,15 +46,46 @@ try:
     arquivo_persistente = io.BytesIO(pdf_res)
 except: arquivo_persistente = None
 
-with st.expander("⬆️ Upload PDF"):
-    novo = st.file_uploader("Selecione o arquivo", type="pdf")
-    if st.button("Atualizar Banco") and novo:
-        bytes_pdf = novo.read()
-        supabase.storage.from_(BUCKET).upload(path=FILE_PATH, file=bytes_pdf, file_options={"x-upsert": "true"})
-        dados = process_pdf_simple(io.BytesIO(bytes_pdf))
-        save_to_db(dados)
-        st.success("Sincronizado!")
-        st.rerun()
+with st.expander("⬆️ Configurações de Upload"):
+    # Alterado para aceitar vários arquivos ao mesmo tempo
+    arquivos_novos = st.file_uploader(
+        "Selecione um ou mais arquivos PDF", 
+        type="pdf", 
+        accept_multiple_files=True
+    )
+    
+    if arquivos_novos:
+        # Cria uma lista com os nomes dos arquivos carregados
+        nomes_arquivos = [f.name for f in arquivos_novos]
+        
+        # O usuário seleciona qual arquivo deseja usar para atualizar o sistema
+        arquivo_escolhido_nome = st.selectbox(
+            "Qual arquivo deseja aplicar ao Banco de Dados e ao App?", 
+            nomes_arquivos
+        )
+        
+        # Localiza o objeto do arquivo selecionado na lista
+        arquivo_selecionado = next(f for f in arquivos_novos if f.name == arquivo_escolhido_nome)
+        
+        if st.button("Atualizar Banco e Arquivo com o selecionado"):
+            with st.spinner(f"Processando {arquivo_escolhido_nome}..."):
+                file_bytes = arquivo_selecionado.read()
+                
+                # Salva no Storage (sobrescrevendo o anterior para manter a persistência)
+                supabase.storage.from_(BUCKET).upload(
+                    path=FILE_PATH,
+                    file=file_bytes,
+                    file_options={"x-upsert": "true"}
+                )
+                
+                # Processa as coordenadas para o Banco de Dados
+                import io
+                dados = process_pdf_simple(io.BytesIO(file_bytes))
+                save_to_db(dados)
+                
+                st.success(f"O arquivo '{arquivo_escolhido_nome}' agora é o hinário oficial!")
+                st.rerun()
+
 
 try:
     res_cat = supabase.table("hinos_categorias").select("*").order("nome_nivel1").execute()
