@@ -44,9 +44,13 @@ st.set_page_config(page_title="Hinário Visual", layout="wide")
 
 try:
     pdf_res = supabase.storage.from_(BUCKET).download(FILE_PATH)
-    arquivo_persistente = io.BytesIO(pdf_res)
-except: arquivo_persistente = None
-
+    if pdf_res and len(pdf_res) > 100: # Verifica se não está vazio
+        arquivo_persistente = io.BytesIO(pdf_res)
+    else:
+        arquivo_persistente = None
+except Exception as e:
+    st.warning(f"Aviso: Não foi possível baixar o PDF do storage: {e}")
+    arquivo_persistente = None
 with st.expander("⬆️ Upload PDF"):
     novo = st.file_uploader("Selecione o arquivo", type="pdf")
     if st.button("Atualizar Banco") and novo:
