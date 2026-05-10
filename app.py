@@ -48,9 +48,10 @@ try:
         arquivo_persistente = io.BytesIO(pdf_res)
     else:
         arquivo_persistente = None
-except Exception as e:
-    st.warning(f"Aviso: Não foi possível baixar o PDF do storage: {e}")
+except Exception as e: 
+    st.write("Erro específico do Supabase:", e)
     arquivo_persistente = None
+    
 with st.expander("⬆️ Upload PDF"):
     novo = st.file_uploader("Selecione o arquivo", type="pdf")
     if st.button("Atualizar Banco") and novo:
