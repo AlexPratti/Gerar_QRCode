@@ -60,6 +60,7 @@ arquivo_persistente = None
 try:
     # Baixa o PDF do storage
     pdf_res = supabase.storage.from_(BUCKET).download(FILE_PATH)
+    st.write(f"Tamanho recebido: {len(pdf_res)} bytes")
     # Valida se é um PDF real (checa assinatura do arquivo %PDF)
     if pdf_res and pdf_res[:4] == b'%PDF':
         arquivo_persistente = io.BytesIO(pdf_res)
