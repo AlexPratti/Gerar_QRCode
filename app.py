@@ -2,7 +2,6 @@ import streamlit as st
 import pdfplumber
 import re
 from supabase import create_client
-import pandas as pd
 import io
 import base64
 
@@ -11,118 +10,120 @@ st.set_page_config(page_title="Hinário Visual", layout="wide")
 
 try:
     supabase = create_client(st.secrets["URL_SUPABASE"], st.secrets["KEY_SUPABASE"])
-except Exception as e:
-    st.error(f"Erro de conexão: {e}")
+except:
+    st.error("Erro de conexão com Supabase.")
     st.stop()
 
 BUCKET = "hinarios"
-FILE_PATH = "hinario_atual.pdf"
 CATEGORIAS_ALVO = ["ORANTES", "INICIAIS E FINAIS", "PERDÃO", "GLÓRIA", "DEUS NOS FALA", "SALMO", "ACLAMAÇÃO", "OFERTÓRIO", "LOUVOR", "SANTO", "CORDEIRO", "PAZ", "COMUNHÃO", "BÍBLIA", "CRUZ", "LADAINHAS – SEQUÊNCIAS - PROCLAMAÇÕES", "MARIA", "HINOS DIVERSOS", "PRECES"]
 
-def process_pdf_simple(file_bytes):
-    data = []
-    current_n1 = "Sem Categoria"
+def process_and_upload_images(file_bytes):
+    """Abre o PDF, recorta hinos e salva cada um como imagem no Storage"""
     try:
+        # Limpa banco e storage de imagens antigas
+        supabase.table("hinos_conteudos").delete().neq("id", 0).execute()
+        supabase.table("hinos_categorias").delete().neq("id", 0).execute()
+        
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             progresso = st.progress(0)
+            current_cat = "Sem Categoria"
+            cat_map = {}
+
+            # Primeiro, cria as categorias no banco e mapeia IDs
+            for cat in CATEGORIAS_ALVO:
+                res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat}).execute()
+                if res.data: cat_map[cat] = res.data[0]['id']
+
             total = len(pdf.pages)
             for i, page in enumerate(pdf.pages):
-                text = page.extract_text()
-                if not text: continue
-                for line in text.split('\n'):
-                    t_limpo = line.strip()
+                text_lines = page.extract_text_lines()
+                if not text_lines: continue
+
+                for idx, line in enumerate(text_lines):
+                    t_limpo = line['text'].strip()
+                    
+                    # Identifica Categoria
                     if t_limpo.upper() in CATEGORIAS_ALVO:
-                        current_n1 = t_limpo.upper()
+                        current_cat = t_limpo.upper()
+                    
+                    # Identifica Hino (Número seguido de ponto)
                     elif re.match(r'^\d+\.', t_limpo) and t_limpo == t_limpo.upper():
-                        data.append({"n1": current_n1, "n2": t_limpo, "pag": i + 1})
+                        y_ini = line['top']
+                        y_fim = page.height
+
+                        # Acha o fim do hino (próxima linha que seja título ou categoria)
+                        for next_line in text_lines[idx+1:]:
+                            nt = next_line['text'].strip()
+                            if re.match(r'^\d+\.', nt) or nt.upper() in CATEGORIAS_ALVO:
+                                y_fim = next_line['top']
+                                break
+                        
+                        # Recorta e gera imagem
+                        img = page.crop((0, max(0, y_ini-10), page.width, y_fim)).to_image(resolution=200).original
+                        img_byte_arr = io.BytesIO()
+                        img.save(img_byte_arr, format='PNG')
+                        
+                        # Nome único para a imagem no Storage
+                        img_name = f"hino_{re.sub(r'\W+', '', t_limpo)}.png"
+                        
+                        # Sobe imagem para o Storage
+                        supabase.storage.from_(BUCKET).upload(
+                            path=img_name, 
+                            file=img_byte_arr.getvalue(), 
+                            file_options={"x-upsert": "true", "content-type": "image/png"}
+                        )
+
+                        # Salva referência no Banco (campo 'texto_completo' guarda o nome da imagem)
+                        if current_cat in cat_map:
+                            supabase.table("hinos_conteudos").insert({
+                                "categoria_id": cat_map[current_cat],
+                                "nome_nivel2": t_limpo,
+                                "texto_completo": img_name
+                            }).execute()
+
                 progresso.progress((i + 1) / total)
-        return data
+        return True
     except Exception as e:
-        st.error(f"Erro no processamento do Upload: {e}")
-        return []
+        st.error(f"Erro no processamento radical: {e}")
+        return False
 
-def save_to_db(data):
-    supabase.table("hinos_conteudos").delete().neq("id", 0).execute()
-    supabase.table("hinos_categorias").delete().neq("id", 0).execute()
-    for cat in CATEGORIAS_ALVO:
-        res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat}).execute()
-        if res.data:
-            cat_id = res.data[0]['id'] if isinstance(res.data, list) else res.data['id']
-            itens = [{"categoria_id": cat_id, "nome_nivel2": item['n2'], "texto_completo": str(item['pag'])} for item in data if item['n1'] == cat]
-            if itens: supabase.table("hinos_conteudos").insert(itens).execute()
-
-# --- INTERFACE: UPLOAD ---
-with st.expander("⬆️ Upload PDF"):
-    novo = st.file_uploader("Selecione o arquivo", type="pdf")
-    if st.button("Atualizar Banco") and novo:
-        b_up = novo.read()
-        try:
-            lista = supabase.storage.from_(BUCKET).list()
-            if lista: supabase.storage.from_(BUCKET).remove([f['name'] for f in lista])
-        except: pass
-        supabase.storage.from_(BUCKET).upload(path=FILE_PATH, file=b_up, file_options={"x-upsert": "true", "content-type": "application/pdf"})
-        dados = process_pdf_simple(b_up)
-        if dados:
-            save_to_db(dados)
-            st.success("Sincronizado! O app irá reiniciar.")
+# --- INTERFACE ---
+with st.expander("⬆️ Upload Novo Hinário"):
+    novo = st.file_uploader("Selecione o PDF", type="pdf")
+    if st.button("Processar Tudo") and novo:
+        if process_and_upload_images(novo.read()):
+            st.success("Hinário processado e hinos convertidos em imagens!")
             st.rerun()
 
-# --- INTERFACE: EXIBIÇÃO ---
+# --- EXIBIÇÃO ---
 try:
     res_cat = supabase.table("hinos_categorias").select("*").order("nome_nivel1").execute()
-    
     if res_cat.data:
-        df_cat = pd.DataFrame(res_cat.data)
-        c1, c2 = st.columns(2)
-        with c1:
-            escolha_n1 = st.selectbox("Categoria", df_cat['nome_nivel1'], key="cat")
-            id_n1 = int(df_cat[df_cat['nome_nivel1'] == escolha_n1]['id'].iloc[0])
+        cats = {c['nome_nivel1']: c['id'] for c in res_cat.data}
+        col1, col2 = st.columns(2)
         
-        hinos_res = supabase.table("hinos_conteudos").select("*").eq("categoria_id", id_n1).execute().data
-        if hinos_res:
-            hinos_ord = sorted(hinos_res, key=lambda x: int(re.search(r'\d+', x['nome_nivel2']).group()) if re.search(r'\d+', x['nome_nivel2']) else 0)
-            hino_sel = st.selectbox("Hino", [h['nome_nivel2'] for h in hinos_ord], key=f"h_{id_n1}")
+        with col1:
+            sel_cat = st.selectbox("Categoria", list(cats.keys()))
+        
+        hinos = supabase.table("hinos_conteudos").select("*").eq("categoria_id", cats[sel_cat]).execute().data
+        if hinos:
+            # Ordenação numérica
+            hinos_ord = sorted(hinos, key=lambda x: int(re.search(r'\d+', x['nome_nivel2']).group()) if re.search(r'\d+', x['nome_nivel2']) else 0)
+            titulos = [h['nome_nivel2'] for h in hinos_ord]
             
-            # --- DOWNLOAD DIRETO SEM CACHE ---
-            try:
-                pdf_res = supabase.storage.from_(BUCKET).download(FILE_PATH)
-                
-                # Debug visual para você ver o que está sendo baixado
-                if pdf_res:
-                    if pdf_res[:4] != b'%PDF':
-                        st.error("O arquivo baixado do Storage não é um PDF válido (Assinatura incorreta).")
-                        st.text(f"Início do arquivo: {pdf_res[:50]}")
-                    else:
-                        item_db = next(h for h in hinos_res if h['nome_nivel2'] == hino_sel)
-                        p_num = int(item_db['texto_completo'])
+            with col2:
+                sel_hino = st.selectbox("Hino", titulos)
+            
+            # Pega o nome da imagem salva no banco
+            hino_obj = next(h for h in hinos if h['nome_nivel2'] == sel_hino)
+            img_path = hino_obj['texto_completo']
 
-                        with pdfplumber.open(io.BytesIO(pdf_res)) as pdf:
-                            page = pdf.pages[p_num - 1]
-                            lines = page.extract_text_lines()
-                            y_ini, y_fim = 0, page.height
-
-                            for l in lines:
-                                if hino_sel in l['text']:
-                                    y_ini = l['top']
-                                    break
-                            for l in lines:
-                                if l['top'] > y_ini + 5:
-                                    txt = l['text'].strip()
-                                    if re.match(r'^\d+\.', txt) or txt.upper() in CATEGORIAS_ALVO:
-                                        y_fim = l['top']
-                                        break
-
-                            img = page.crop((0, max(0, y_ini-10), page.width, y_fim)).to_image(resolution=200).original
-                            buf = io.BytesIO()
-                            img.save(buf, format="PNG")
-                            img_b64 = base64.b64encode(buf.getvalue()).decode()
-
-                            st.markdown(f'<img src="data:image/png;base64,{img_b64}" style="width:100%; background:white; border-radius:10px;">', unsafe_allow_html=True)
-                else:
-                    st.warning("O arquivo PDF está vazio no Storage.")
-            except Exception as e_pdf:
-                st.error(f"Erro ao processar imagem do hino: {e_pdf}")
-    else:
-        st.info("Aguardando upload do PDF...")
+            # EXIBIÇÃO DA IMAGEM (Sem abrir PDF!)
+            img_url = supabase.storage.from_(BUCKET).get_public_url(img_path)
+            st.markdown(f'''
+                <div style="background:white; padding:10px; border-radius:10px; text-align:center;">
+                    <img src="{img_url}" style="max-width:100%; height:auto; border:1px solid #eee;">
+                </div>
+            ''', unsafe_allow_html=True)
 except Exception as e:
-    st.error(f"Erro Geral: {e}")
+    st.info("Aguardando upload e processamento...")
