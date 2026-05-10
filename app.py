@@ -5,6 +5,7 @@ from supabase import create_client
 import pandas as pd
 import io
 import base64
+import requests
 
 # --- CONFIGURAÇÃO E CONEXÃO ---
 st.set_page_config(page_title="Hinário Visual", layout="wide")
@@ -25,13 +26,25 @@ CATEGORIAS_ALVO = [
     "MARIA", "HINOS DIVERSOS", "PRECES"
 ]
 
-def process_pdf_simple(file):
+# --- FUNÇÕES DE SUPORTE ---
+
+@st.cache_data(show_spinner="Baixando Hinário do Servidor...", ttl=3600)
+def download_pdf_robusto():
+    """Baixa o PDF usando URL pública e requests (melhor para arquivos grandes)"""
+    try:
+        url = supabase.storage.from_(BUCKET).get_public_url(FILE_PATH)
+        response = requests.get(url, timeout=120) # 2 minutos de limite
+        if response.status_code == 200 and response.content[:4] == b'%PDF':
+            return response.content
+        return None
+    except Exception as e:
+        return None
+
+def process_pdf_simple(file_bytes):
     data = []
     current_n1 = "Sem Categoria"
     try:
-        # Garantir que o ponteiro do arquivo está no início
-        file.seek(0)
-        with pdfplumber.open(file) as pdf:
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             progresso = st.progress(0)
             total_pags = len(pdf.pages)
             for i, page in enumerate(pdf.pages):
@@ -68,64 +81,45 @@ def save_to_db(data):
             if itens: 
                 supabase.table("hinos_conteudos").insert(itens).execute()
 
-# --- BLOCO DE DOWNLOAD COM DIAGNÓSTICO (O Coração do Problema) ---
-arquivo_persistente = None
-try:
-    pdf_res = supabase.storage.from_(BUCKET).download(FILE_PATH)
-    
-    if pdf_res:
-        # Verifica se o arquivo começa com o cabeçalho PDF padrão
-        if pdf_res[:4] == b'%PDF':
-            arquivo_persistente = io.BytesIO(pdf_res)
-            arquivo_persistente.seek(0)
-        else:
-            # Se não começar com %PDF, mostra o que o servidor enviou (pode ser um erro em texto)
-            st.error("O arquivo retornado pelo servidor não é um PDF válido.")
-            try:
-                st.code(pdf_res.decode('utf-8')[:500], language="txt")
-            except:
-                pass
-    else:
-        arquivo_persistente = None
-except Exception as e:
-    # Erro silencioso no carregamento inicial para não travar a UI de upload
-    arquivo_persistente = None
+# --- LOGICA DE CARREGAMENTO ---
+# Tentamos baixar o arquivo usando a função com cache
+pdf_bytes = download_pdf_robusto()
+arquivo_persistente = io.BytesIO(pdf_bytes) if pdf_bytes else None
 
 # --- INTERFACE: UPLOAD ---
 with st.expander("⬆️ Upload PDF"):
-    novo = st.file_uploader("Selecione o arquivo (Irá substituir o atual)", type="pdf")
+    novo = st.file_uploader("Selecione o arquivo (Substitui o atual)", type="pdf")
     if st.button("Atualizar Banco e Arquivo") and novo:
         with st.spinner("Limpando versões anteriores e processando novo arquivo..."):
-            bytes_pdf = novo.read()
+            bytes_upload = novo.read()
             
-            # 1. Limpa o Bucket Manualmente via Código
+            # 1. Limpa o Bucket
             try:
-                lista_arquivos = supabase.storage.from_(BUCKET).list()
-                if lista_arquivos:
-                    nomes_para_deletar = [f['name'] for f in lista_arquivos]
-                    supabase.storage.from_(BUCKET).remove(nomes_para_deletar)
-            except:
-                pass
+                lista = supabase.storage.from_(BUCKET).list()
+                if lista:
+                    nomes = [f['name'] for f in lista]
+                    supabase.storage.from_(BUCKET).remove(nomes)
+            except: pass
             
-            # 2. Upload do novo arquivo
+            # 2. Upload
             supabase.storage.from_(BUCKET).upload(
                 path=FILE_PATH, 
-                file=bytes_pdf, 
+                file=bytes_upload, 
                 file_options={"x-upsert": "true", "content-type": "application/pdf"}
             )
             
-            # 3. Processamento e Banco
-            dados = process_pdf_simple(io.BytesIO(bytes_pdf))
+            # 3. Processa e Salva
+            dados = process_pdf_simple(bytes_upload)
             if dados:
                 save_to_db(dados)
-                st.success("Sincronizado com sucesso! Reiniciando...")
+                st.cache_data.clear() # Limpa o cache para baixar o novo arquivo
+                st.success("Sincronizado! Reiniciando...")
                 st.rerun()
-            else:
-                st.error("O PDF foi carregado, mas não conseguimos extrair hinos dele.")
 
 # --- INTERFACE: EXIBIÇÃO ---
 try:
     res_cat = supabase.table("hinos_categorias").select("*").order("nome_nivel1").execute()
+    
     if res_cat.data and arquivo_persistente:
         df_cat = pd.DataFrame(res_cat.data)
         c1, c2 = st.columns(2)
@@ -135,7 +129,7 @@ try:
         
         hinos_data = supabase.table("hinos_conteudos").select("*").eq("categoria_id", id_n1).execute().data
         if hinos_data:
-            # Ordenação numérica (ex: "1. Hino" antes de "10. Hino")
+            # Ordenação numérica
             hinos_ord = sorted(hinos_data, key=lambda x: int(re.search(r'\d+', x['nome_nivel2']).group()) if re.search(r'\d+', x['nome_nivel2']) else 0)
             titulos_lista = [h['nome_nivel2'] for h in hinos_ord]
             hino_sel = st.selectbox("Hino", titulos_lista, key=f"h_{escolha_n1}")
@@ -145,33 +139,28 @@ try:
 
             st.divider()
             
-            # Processamento visual da página
+            # Processamento visual
             with pdfplumber.open(arquivo_persistente) as pdf:
                 page = pdf.pages[p_num - 1]
                 text_lines = page.extract_text_lines()
-                
-                y_ini = 0
-                y_fim = page.height
+                y_ini, y_fim = 0, page.height
 
-                # Localização do topo
                 for line in text_lines:
                     if hino_sel in line['text']:
                         y_ini = line['top']
                         break
-                
-                # Localização do fim (próximo título ou categoria)
                 for line in text_lines:
                     if line['top'] > y_ini + 5:
-                        conteudo_linha = line['text'].strip()
-                        if re.match(r'^\d+\.', conteudo_linha) or conteudo_linha.upper() in CATEGORIAS_ALVO:
+                        conteudo = line['text'].strip()
+                        if re.match(r'^\d+\.', conteudo) or conteudo.upper() in CATEGORIAS_ALVO:
                             y_fim = line['top']
                             break
 
                 y_ini_crop = max(0, y_ini - 10)
                 if y_fim <= y_ini_crop: y_fim = page.height
                 
-                # Crop e Conversão para Imagem (resolução 200 para equilíbrio entre zoom e memória)
-                img_obj = page.crop((0, y_ini_crop, page.width, y_fim)).to_image(resolution=200).original
+                # Resolução 150 para economizar RAM no Streamlit Cloud
+                img_obj = page.crop((0, y_ini_crop, page.width, y_fim)).to_image(resolution=150).original
                 
                 buffered = io.BytesIO()
                 img_obj.save(buffered, format="PNG")
@@ -179,27 +168,13 @@ try:
 
                 st.markdown(
                     f"""
-                    <div style="width: 100%; overflow: auto; background-color: white; border-radius: 8px; padding: 5px;">
-                        <img src="data:image/png;base64,{img_base64}" 
-                             style="width: 100%; height: auto; cursor: zoom-in;" 
-                             onclick="window.open(this.src, '_blank');"
-                             title="Clique para ampliar">
+                    <div style="width: 100%; background-color: white; border-radius: 8px; padding: 5px;">
+                        <img src="data:image/png;base64,{img_base64}" style="width: 100%; height: auto;">
                     </div>
-                    <p style="text-align: center; color: gray; font-size: 0.8rem; margin-top: 10px;">
-                        Toque na imagem para abrir em tela cheia e usar o zoom.
-                    </p>
                     """, 
                     unsafe_allow_html=True
                 )
     else:
-        if not arquivo_persistente:
-            st.info("Aguardando arquivo PDF ser carregado no Storage ou arquivo inválido.")
-        else:
-            st.info("Selecione uma categoria para listar os hinos.")
-
+        st.info("Aguardando PDF ou configuração inicial...")
 except Exception as e:
-    # Captura erros de processamento visual para não quebrar o app todo
-    if "PDFium" in str(e):
-        st.error("Erro técnico no processamento do PDF. Tente fazer o upload do arquivo novamente.")
-    else:
-        st.error(f"Erro na interface: {e}")
+    st.error(f"Erro ao carregar dados: {e}")
