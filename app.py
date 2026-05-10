@@ -53,27 +53,48 @@ def save_to_db(data, table_cat, table_cont):
 
 # --- FUNÇÃO PARA LIMPAR CIFRAS DOCX ---
 def limpar_cifras_docx(file):
+    # Abrimos o documento original para preservar estilos, margens e fontes
     doc = Document(file)
-    novo_doc = Document()
-    padrao_cifras = r'\b([A-G][b#]?(m|maj|min|7|sus|4|6|9|dim|aug)*)\b'
     
-    for p in doc.paragraphs:
-        texto = p.text
-        limpo = texto.strip()
-        if not limpo:
-            novo_doc.add_paragraph("")
-            continue
-        
-        acordes = re.findall(padrao_cifras, limpo)
-        letras_min = len(re.findall(r'[a-z]', limpo))
-        
-        if len(acordes) > 0 and letras_min < 2:
-            continue
-        
-        novo_doc.add_paragraph(texto)
+    # Padrão de cifras: Notas A-G isoladas, seguidas de m, #, 7, etc.
+    # Esta regex foca em linhas que contém padrões de acordes musicais
+    padrao_cifras = r'\b([A-G][b#]?(m|maj|min|7|9|11|13|sus|4|dim|aug|add|6)*)(?=\s|$|/)\b'
     
+    # Pegamos a lista de parágrafos
+    paragraphs = doc.paragraphs
+    # Usamos uma lista de índices para deletar de trás para frente para não quebrar o loop
+    indices_para_deletar = []
+
+    for i, p in enumerate(paragraphs):
+        texto = p.text.strip()
+        if not texto:
+            continue
+            
+        # Encontra todos os acordes na linha
+        acordes = re.findall(padrao_cifras, texto)
+        # Conta letras minúsculas (geralmente presentes em letras de músicas, raras em linhas de cifras)
+        letras_minusculas = len(re.findall(r'[a-z]', texto))
+        
+        # CRITÉRIO DE REMOÇÃO:
+        # Se a linha tem acordes E (quase não tem letras minúsculas OU é composta majoritariamente por espaços/acordes)
+        if len(acordes) > 0:
+            # Se for uma linha "limpa" de cifras (quase sem texto comum)
+            if letras_minusculas < 3: 
+                indices_para_deletar.append(i)
+            # Ou se a proporção de acordes for muito alta comparada ao texto
+            elif len(acordes) / len(texto.split()) > 0.5:
+                indices_para_deletar.append(i)
+
+    # Deletamos os parágrafos de cifras do objeto original
+    # A deleção no python-docx é feita removendo o elemento XML do parágrafo
+    for index in sorted(indices_para_deletar, reverse=True):
+        p = paragraphs[index]._element
+        p.getparent().remove(p)
+        p._p = p._element = None
+
+    # Salva o arquivo modificado em memória mantendo a formatação
     target = io.BytesIO()
-    novo_doc.save(target)
+    doc.save(target)
     return target.getvalue()
 
 # --- INTERFACE ---
