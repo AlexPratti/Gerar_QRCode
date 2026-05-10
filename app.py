@@ -21,7 +21,7 @@ CATEGORIAS_ALVO = ["ORANTES", "INICIAIS E FINAIS", "PERDÃO", "GLÓRIA", "DEUS N
 # --- FUNÇÕES DE PROCESSAMENTO ---
 
 def process_pdf_fitz(file_bytes):
-    """Extrai a estrutura de hinos e páginas do PDF"""
+    """Extrai a estrutura de hinos e páginas do PDF usando PyMuPDF"""
     data = []
     current_cat = "Sem Categoria"
     try:
@@ -49,7 +49,6 @@ def save_to_db(data, table_cat, table_cont):
     for cat in CATEGORIAS_ALVO:
         res = supabase.table(table_cat).insert({"nome_nivel1": cat}).execute()
         if res.data:
-            # Captura ID do retorno (pode ser lista ou dict dependendo da versão da lib)
             res_data = res.data[0] if isinstance(res.data, list) else res.data
             cat_id = res_data['id']
             itens = [{"categoria_id": cat_id, "nome_nivel2": item['n2'], "texto_completo": str(item['pag'])} for item in data if item['n1'] == cat]
@@ -57,7 +56,7 @@ def save_to_db(data, table_cat, table_cont):
                 supabase.table(table_cont).insert(itens).execute()
 
 def render_hino_interface(bucket, file_path, table_cat, table_cont, key_suffix):
-    """Lógica unificada de seleção e exibição de hinos"""
+    """Interface de seleção e exibição de hinos"""
     try:
         res_cat = supabase.table(table_cat).select("*").order("nome_nivel1").execute()
         if res_cat.data:
@@ -65,11 +64,12 @@ def render_hino_interface(bucket, file_path, table_cat, table_cont, key_suffix):
             col1, col2 = st.columns(2)
             with col1:
                 sel_cat = st.selectbox("Categoria", df_cat['nome_nivel1'], key=f"cat_{key_suffix}")
-                cat_id = df_cat[df_cat['nome_nivel1'] == sel_cat]['id'].iloc
+                # CORREÇÃO DO ERRO DE INDEXER: Usamos .iloc[0] para pegar o valor escalar
+                cat_id = df_cat[df_cat['nome_nivel1'] == sel_cat]['id'].iloc[0]
             
             hinos_res = supabase.table(table_cont).select("*").eq("categoria_id", int(cat_id)).execute().data
             if hinos_res:
-                # Ordenação numérica (1, 2, 10...)
+                # Ordenação numérica
                 hinos_ord = sorted(hinos_res, key=lambda x: int(re.search(r'\d+', x['nome_nivel2']).group()) if re.search(r'\d+', x['nome_nivel2']) else 0)
                 with col2:
                     sel_hino = st.selectbox("Hino", [h['nome_nivel2'] for h in hinos_ord], key=f"hino_{key_suffix}")
@@ -91,14 +91,14 @@ def render_hino_interface(bucket, file_path, table_cat, table_cont, key_suffix):
                     # Busca fim do hino (próximo título ou categoria)
                     blocks = page.get_text("blocks")
                     for b in blocks:
-                        # Coordenada 'y' do bloco é o índice 1 na tupla (x0, y0, x1, y1, texto...)
+                        # b[1] é a coordenada y0 do bloco
                         if b[1] > y_ini + 10:
                             txt_block = b[4].strip()
                             if re.match(r'^\d+\.', txt_block) or txt_block.upper() in CATEGORIAS_ALVO:
                                 y_fim = b[1]
                                 break
 
-                    # Geração da Imagem
+                    # Geração da Imagem (Zoom 2x para nitidez)
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=fitz.Rect(0, max(0, y_ini-15), page.rect.width, y_fim))
                     st.divider()
                     st.image(pix.tobytes("png"), use_container_width=True)
@@ -106,7 +106,7 @@ def render_hino_interface(bucket, file_path, table_cat, table_cont, key_suffix):
             else:
                 st.info("Nenhum hino encontrado nesta categoria.")
         else:
-            st.info("Banco de dados vazio. Realize o upload do PDF na aba de gerenciamento.")
+            st.info("Banco de dados vazio. Realize o upload na aba de gerenciamento correspondente.")
     except Exception as e:
         st.error(f"Erro na visualização: {e}")
 
@@ -133,7 +133,6 @@ with tab_up_cifras:
     if st.button("🚀 Atualizar Cifras", key="btn_cifras") and novo_c:
         with st.spinner("Processando Cifras..."):
             b = novo_c.read()
-            # Limpa e sobe
             try:
                 lista = supabase.storage.from_("hinarios").list()
                 if lista: supabase.storage.from_("hinarios").remove([f['name'] for f in lista])
@@ -152,7 +151,6 @@ with tab_up_letras:
     if st.button("🚀 Atualizar Letras", key="btn_letras") and novo_l:
         with st.spinner("Processando Letras..."):
             b = novo_l.read()
-            # Limpa e sobe
             try:
                 lista = supabase.storage.from_("letras").list()
                 if lista: supabase.storage.from_("letras").remove([f['name'] for f in lista])
