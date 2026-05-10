@@ -23,7 +23,6 @@ def process_pdf_simple(file_bytes):
     data = []
     current_n1 = "Sem Categoria"
     try:
-        # Força a criação de um novo buffer para o processamento inicial
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             progresso = st.progress(0)
             total = len(pdf.pages)
@@ -39,7 +38,7 @@ def process_pdf_simple(file_bytes):
                 progresso.progress((i + 1) / total)
         return data
     except Exception as e:
-        st.error(f"Erro no processamento: {e}")
+        st.error(f"Erro no processamento do Upload: {e}")
         return []
 
 def save_to_db(data):
@@ -48,9 +47,7 @@ def save_to_db(data):
     for cat in CATEGORIAS_ALVO:
         res = supabase.table("hinos_categorias").insert({"nome_nivel1": cat}).execute()
         if res.data:
-            # Pega o ID independente se vier como lista ou dicionário
-            res_data = res.data[0] if isinstance(res.data, list) else res.data
-            cat_id = res_data['id']
+            cat_id = res.data[0]['id'] if isinstance(res.data, list) else res.data['id']
             itens = [{"categoria_id": cat_id, "nome_nivel2": item['n2'], "texto_completo": str(item['pag'])} for item in data if item['n1'] == cat]
             if itens: supabase.table("hinos_conteudos").insert(itens).execute()
 
@@ -67,12 +64,11 @@ with st.expander("⬆️ Upload PDF"):
         dados = process_pdf_simple(b_up)
         if dados:
             save_to_db(dados)
-            st.success("Sincronizado!")
+            st.success("Sincronizado! O app irá reiniciar.")
             st.rerun()
 
 # --- INTERFACE: EXIBIÇÃO ---
 try:
-    # 1. Carrega menus do banco
     res_cat = supabase.table("hinos_categorias").select("*").order("nome_nivel1").execute()
     
     if res_cat.data:
@@ -87,52 +83,46 @@ try:
             hinos_ord = sorted(hinos_res, key=lambda x: int(re.search(r'\d+', x['nome_nivel2']).group()) if re.search(r'\d+', x['nome_nivel2']) else 0)
             hino_sel = st.selectbox("Hino", [h['nome_nivel2'] for h in hinos_ord], key=f"h_{id_n1}")
             
-            # --- MOMENTO CRÍTICO: CARREGAMENTO DA IMAGEM ---
-            # Baixamos os bytes do storage na hora
+            # --- DOWNLOAD DIRETO SEM CACHE ---
             try:
                 pdf_res = supabase.storage.from_(BUCKET).download(FILE_PATH)
                 
-                if pdf_res and pdf_res[:4] == b'%PDF':
-                    item_db = next(h for h in hinos_res if h['nome_nivel2'] == hino_sel)
-                    p_num = int(item_db['texto_completo'])
+                # Debug visual para você ver o que está sendo baixado
+                if pdf_res:
+                    if pdf_res[:4] != b'%PDF':
+                        st.error("O arquivo baixado do Storage não é um PDF válido (Assinatura incorreta).")
+                        st.text(f"Início do arquivo: {pdf_res[:50]}")
+                    else:
+                        item_db = next(h for h in hinos_res if h['nome_nivel2'] == hino_sel)
+                        p_num = int(item_db['texto_completo'])
 
-                    st.divider()
-                    
-                    # Usamos io.BytesIO novo para cada abertura
-                    with pdfplumber.open(io.BytesIO(pdf_res)) as pdf:
-                        page = pdf.pages[p_num - 1]
-                        lines = page.extract_text_lines()
-                        y_ini, y_fim = 0, page.height
+                        with pdfplumber.open(io.BytesIO(pdf_res)) as pdf:
+                            page = pdf.pages[p_num - 1]
+                            lines = page.extract_text_lines()
+                            y_ini, y_fim = 0, page.height
 
-                        for l in lines:
-                            if hino_sel in l['text']:
-                                y_ini = l['top']
-                                break
-                        for l in lines:
-                            if l['top'] > y_ini + 5:
-                                txt = l['text'].strip()
-                                if re.match(r'^\d+\.', txt) or txt.upper() in CATEGORIAS_ALVO:
-                                    y_fim = l['top']
+                            for l in lines:
+                                if hino_sel in l['text']:
+                                    y_ini = l['top']
                                     break
+                            for l in lines:
+                                if l['top'] > y_ini + 5:
+                                    txt = l['text'].strip()
+                                    if re.match(r'^\d+\.', txt) or txt.upper() in CATEGORIAS_ALVO:
+                                        y_fim = l['top']
+                                        break
 
-                        # Geramos a imagem
-                        img = page.crop((0, max(0, y_ini-10), page.width, y_fim)).to_image(resolution=200).original
-                        
-                        buf = io.BytesIO()
-                        img.save(buf, format="PNG")
-                        img_b64 = base64.b64encode(buf.getvalue()).decode()
+                            img = page.crop((0, max(0, y_ini-10), page.width, y_fim)).to_image(resolution=200).original
+                            buf = io.BytesIO()
+                            img.save(buf, format="PNG")
+                            img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-                        st.markdown(f'''
-                            <div style="background:white; padding:10px; border-radius:10px; border: 1px solid #ddd;">
-                                <img src="data:image/png;base64,{img_b64}" style="width:100%; height:auto;">
-                            </div>
-                        ''', unsafe_allow_html=True)
+                            st.markdown(f'<img src="data:image/png;base64,{img_b64}" style="width:100%; background:white; border-radius:10px;">', unsafe_allow_html=True)
                 else:
-                    st.warning("Arquivo PDF não encontrado ou incompleto no servidor.")
+                    st.warning("O arquivo PDF está vazio no Storage.")
             except Exception as e_pdf:
                 st.error(f"Erro ao processar imagem do hino: {e_pdf}")
     else:
-        st.info("Nenhuma categoria encontrada.")
+        st.info("Aguardando upload do PDF...")
 except Exception as e:
     st.error(f"Erro Geral: {e}")
-
